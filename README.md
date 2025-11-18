@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # EduCloud Project
 
 ## Overview
@@ -35,3 +36,6 @@ Contributions are welcome! Please submit a pull request or open an issue for any
 
 ## License
 This project is licensed under the MIT License.
+=======
+# EduCloud-AWS-2025
+>>>>>>> 3d851bec777c03b56b25d5049431d8422fe8526f

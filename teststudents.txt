@@ -1,0 +1,4 @@
+name,email,class,os
+Ahmed,Al-Asadi,Al-Ah960@school.lu,Class A,ubuntu
+Maksim Bogomolov,BogMa579@school.lu,Class B,windows
+Aristide Katagaruka,KatAr711@school.lu,Class C,kali

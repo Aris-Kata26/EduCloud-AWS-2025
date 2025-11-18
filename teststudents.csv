@@ -1,0 +1,5 @@
+﻿Column1,Column2,Column3,Column4
+name,email,class,os
+John Doe,john.doe@example.com,Class A,ubuntu
+Jane Smith,jane.smith@example.com,Class B,windows
+Alice Johnson,alice.johnson@example.com,Class C,kali
