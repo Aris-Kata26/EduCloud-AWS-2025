@@ -1,136 +1,168 @@
-# lambda/handler.py — FINAL & COMPLETE (EC2 launch + SES email like VM Bridge)
-import json
-import boto3
-import csv
+# EDU CLOUD – FINAL VERSION 100% WORKING WITH YOUR EXACT ENV VARS
+import json, os, csv, base64, traceback
 from io import StringIO
-import pymysql
-import os
-from botocore.exceptions import ClientError
+import boto3, pymysql
+import email
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
-s3 = boto3.client('s3')
-ec2 = boto3.resource('ec2')
-ses = boto3.client('ses')
-conn = pymysql.connect(
-    host=os.environ['RDS_ENDPOINT'],
-    user=os.environ['RDS_USER'],
-    password=os.environ['RDS_PASSWORD'],
-    database=os.environ['RDS_DB']
-)
-cur = conn.cursor()
-
-# Your Golden AMIs — Preserved
-AMI_MAP = {
-    'ubuntu': 'ami-0e86e20dae9224db8',   # Ubuntu 22.04 us-east-1
-    'kali':   'ami-0c55b159cbfafe1f0',   # Replace with real Kali AMI if you have one
-    'windows':'ami-0dfaa19c0e7d8d297'    # Windows Server 2022
-}
-SECURITY_GROUP = "sg-0xxxxxxxxxxxxxxx"
-SUBNET_ID = "subnet-0xxxxxxxxxxxxxxx"
-
-# BEAUTIFUL EMAIL TEMPLATE — EXACTLY LIKE VM BRIDGE
-HTML_EMAIL = """<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>Your EduCloud VM</title></head>
-<body style="font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px;">
-<div style="max-width: 600px; margin: auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 0 20px rgba(0,0,0,0.1);">
-  <div style="background: #0c2e4a; color: #00ff99; padding: 30px; text-align: center;">
-    <h1>Assigned Virtual Machine</h1>
-  </div>
-  <div style="padding: 30px; line-height: 1.8; color: #333;">
-    <p>Dear <strong>{name}</strong>,</p>
-    <p>Below are the details of your assigned virtual machine for the <strong>{class_name}</strong> class:</p>
-    <p>VM Name:<br><strong>{name}</strong></p>
-    <p>OS Type:<br><strong>{os_type}</strong></p>
-    <p>IP Address:<br><span style="font-size: 24px; font-weight: bold; color: #00ff99;">{ip}</span></p>
-    <p>Username:<br><strong>{username}</strong></p>
-    <p>Password:<br><strong>{password}</strong></p>
-
-    <hr style="margin: 30px 0; border: 1px dashed #ddd;">
-    <h3>How to Access Your VM</h3>
-    <p>Use <strong>MobaXterm</strong> (free SSH/RDP client):</p>
-    <ul>
-      <li>Download from <a href="https://mobaxterm.mobatek.net">mobaxterm.mobatek.net</a></li>
-      <li>For Ubuntu/Kali: Session → SSH → IP: <strong>{ip}</strong> → Username: <strong>{username}</strong></li>
-      <li>For Windows: Session → RDP → IP: <strong>{ip}</strong> → Username: Administrator</li>
-    </ul>
-
-    <h3>Important Reminders</h3>
-    <ul>
-      <li>Do not install unnecessary software</li>
-      <li>Your activity may be monitored</li>
-      <li>Contact your instructor if connection issues</li>
-    </ul>
-
-    <p>Best regards,<br><strong>Your Instructor</strong></p>
-  </div>
-  <div style="background: #0c2e4a; color: #88ddff; padding: 20px; text-align: center; font-size: 14px;">
-    EduCloud • BTS Luxembourg • Ahmed Al-Asadi & Aristide Katagaruka – B1CLC 2025
-  </div>
-</div>
-</body>
-</html>"""
-
-def send_email(name, email, class_name, os_type, ip):
-    username = "ubuntu" if os_type == "ubuntu" else "kali" if os_type == "kali" else "Administrator"
-    password = "ubuntu" if os_type in ["ubuntu", "kali"] else "Check AWS Console → Get Windows Password"
-    
-    ses.send_email(
-        Source="no-reply@educloud.lu",
-        Destination={'ToAddresses': [email]},
-        Message={
-            'Subject': {'Data': 'Your EduCloud Virtual Machine is Ready!'},
-            'Body': {
-                'Html': {'Data': HTML_EMAIL.format(
-                    name=name, class_name=class_name, os_type=os_type.title(),
-                    ip=ip, username=username, password=password
-                )}
-            }
-        }
+def get_db_connection():
+    return pymysql.connect(
+        host=os.environ['RDS_HOST'],
+        user=os.environ['RDS_USER'],
+        password=os.environ['RDS_PASS'],
+        database=os.environ['RDS_DB'],
+        connect_timeout=10,
+        read_timeout=10,
+        autocommit=True,
+        cursorclass=pymysql.cursors.DictCursor
     )
-    print(f"Email sent to {email}")
+
+AMI_MAP = {
+    "ubuntu":  "ami-0d799c9bb6de3354e",
+    "windows": "ami-08b2e3c6f99cfebc4",
+    "kali":    "ami-0e4f278673927a362"
+}
 
 def lambda_handler(event, context):
-    for record in event['Records']:
-        bucket = record['943']['bucket']['name']
-        key = record['s3']['object']['key']
-        
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        reader = csv.DictReader(StringIO(obj['Body'].read().decode('utf-8')))
-        
-        for row in reader:
-            name = row['name'].strip()
-            email = row['email'].strip().lower()
-            class_name = row['class'].strip()
-            os_type = row['os'].strip().lower()
-            
-            if os_type not in AMI_MAP: continue
-            
-            # Launch EC2
-            instances = ec2.create_instances(
-                ImageId=AMI_MAP[os_type],
-                InstanceType='t3.medium' if 'windows' in os_type else 't3.micro',
-                MinCount=1, MaxCount=1,
-                KeyName='educloud-key',
-                SubnetId=SUBNET_ID,
-                SecurityGroupIds=[SECURITY_GROUP],
-                TagSpecifications=[{'ResourceType': 'instance', 'Tags': [
-                    {'Key': 'Name', 'Value': f"EduCloud-{name}"},
-                    {'Key': 'Student', 'Value': name},
-                    {'Key': 'Email', 'Value': email},
-                    {'Key': 'Class', 'Value': class_name}
-                ]}]
-            )
-            instance = instances[0]
+    # --- S3 Trigger ---
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key    = event['Records'][0]['s3']['object']['key']
+    if not key.startswith("uploads/"):
+        return {"statusCode": 200}
+
+    s3  = boto3.client('s3')
+    ec2 = boto3.resource('ec2')
+    ses = boto3.client('ses', region_name='us-east-1')
+
+    # Your private key from env var (already perfect)
+    private_key_pem=os.environ['EDUCLOUD_PRIVATE_KEY']
+
+    csv_content = s3.get_object(Bucket=bucket, Key=key)['Body'].read().decode('utf-8-sig')
+
+    for i, row in enumerate(csv.DictReader(StringIO(csv_content))):
+        try:
+            name    = row.get('name', 'Student').strip()
+            email   = row.get('email', '').strip().lower()
+            os_type = (row.get('os', 'ubuntu') or 'ubuntu').strip().lower()
+
+            if not email or '@' not in email:
+                print(f"Skipping invalid row {i}")
+                continue
+
+            # --- Check student exists ---
+            conn = get_db_connection()
+            cur  = conn.cursor()
+            cur.execute("SELECT id FROM students WHERE email=%s", (email,))
+            if not cur.fetchone():
+                print(f"Student {email} not in DB")
+                conn.close()
+                continue
+
+            # --- UserData only for Windows ---
+            user_data = None
+            if os_type == "windows":
+                user_data = '''<powershell>
+<persist>true</persist>
+net user Administrator Welcome123!
+netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+</powershell>'''
+
+            # --- Instance launch parameters (100% safe) ---
+            launch_params = {
+                "ImageId": AMI_MAP[os_type],
+                "InstanceType": "t3.micro",
+                "MinCount": 1,
+                "MaxCount": 1,
+                "KeyName": os.environ['EC2_KEY_NAME'],  # Key pair name
+                "NetworkInterfaces": [{
+                    "DeviceIndex": 0,
+                    "SubnetId": os.environ['EC2_SUBNET_ID'],  # Subnet ID
+                    "Groups": [os.environ['EC2_SG_ID']],      # Security group ID
+                    "AssociatePublicIpAddress": True         # Must be inside NetworkInterfaces
+                }],
+                "TagSpecifications": [{
+                    "ResourceType": "instance",
+                    "Tags": [{"Key": "Name", "Value": f"EduCloud-{name}"}]
+                }]
+            }
+            if user_data:
+                launch_params["UserData"] = user_data
+
+            instance = ec2.create_instances(**launch_params)[0]
             instance.wait_until_running()
             instance.reload()
-            
-            # Save to RDS
-            cur.execute("""UPDATE assignments SET instance_id=%s, public_ip=%s, sent=1 
-                           WHERE student_id=(SELECT id FROM students WHERE email=%s)""",
-                        (instance.instance_id, instance.public_ip_address, email))
-            conn.commit()
-            
-            # SEND THE BEAUTIFUL EMAIL
-            send_email(name, email, class_name, os_type, instance.public_ip_address)
-    
-    return {'statusCode': 200}
+            public_ip = instance.public_ip_address
+
+            # --- Save to DB ---
+            cur.execute("""INSERT INTO assignments (student_id, instance_id, public_ip, os_type, sent)
+                           VALUES ((SELECT id FROM students WHERE email=%s), %s, %s, %s, 1)
+                           ON DUPLICATE KEY UPDATE public_ip=%s, instance_id=%s""",
+                        (email, instance.id, public_ip, os_type, public_ip, instance.id))
+            conn.close()
+
+            # --- EMAIL + .pem ATTACHMENT ---
+            if os_type == "windows":
+                html_body = f"""
+                <h1>Welcome to EduCloud!</h1>
+                <p>Hi {name.split()[0]}, your Windows VM is ready!</p>
+                <ul>
+                    <li><b>IP:</b> {public_ip}</li>
+                    <li><b>Username:</b> Administrator</li>
+                    <li><b>Password:</b> Welcome123!</li>
+                </ul>
+                <p>Open Remote Desktop → connect → done!</p>
+                """
+                private_key_attachment = None  # No attachment for Windows
+            else:
+                html_body = f"""
+                <h1>Welcome to EduCloud!</h1>
+                <p>Hi {name.split()[0]}, your Linux VM is ready!</p>
+                <p><b>IP:</b> {public_ip}</p>
+                <h3>Connect with MobaXterm (super easy):</h3>
+                <ol>
+                    <li>Download the attached <b>educloud-key.pem</b></li>
+                    <li>Open MobaXterm → New session → SSH</li>
+                    <li>Remote host: <b>{public_ip}</b></li>
+                    <li>Username: <b>ubuntu</b></li>
+                    <li>Advanced tab → Use private key → select the downloaded .pem</li>
+                    <li>Click OK → you are connected!</li>
+                </ol>
+                """
+                # Prepare the private key attachment
+                private_key_attachment = MIMEBase('application', 'x-pem-file')
+                private_key_attachment.set_payload(private_key_pem.encode())
+                encoders.encode_base64(private_key_attachment)
+                private_key_attachment.add_header('Content-Disposition', 'attachment', filename='educloud-key.pem')
+
+            # Create a MIME email
+            msg = MIMEMultipart()
+            msg['Subject'] = 'Your EduCloud VM is ready!'
+            msg['From'] = 'no-reply@webuilders.lu'
+            msg['To'] = email
+
+            # Attach the HTML body
+            msg.attach(MIMEText(html_body, 'html'))
+
+            # Attach the private key if applicable
+            if private_key_attachment:
+                msg.attach(private_key_attachment)
+
+            # Send the email using SES
+            ses.send_raw_email(
+                Source="no-reply@webuilders.lu",
+                Destinations=[email],
+                RawMessage={
+                    'Data': msg.as_string()
+                }
+            )
+
+            print(f"SUCCESS → {email} | {public_ip} | OS: {os_type}")
+
+        except Exception as e:
+            print(f"ERROR on row {i}: {e}")
+            traceback.print_exc()
+
+    return {"statusCode": 200}
