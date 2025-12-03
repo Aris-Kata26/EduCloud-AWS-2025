@@ -1,0 +1,20 @@
+# Secrets
+.env
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build & deploy
+deploy/
+*.zip
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
